@@ -112,6 +112,15 @@ typedef enum
   LabMode = 9
 } PSDImageType;
 
+
+typedef enum
+{
+    LayerTypeStandard = 0,                  // Normal layer with pixels
+    LayerTypeFolderStartOpen = 1,           // Start of a folder, expanded in the UI
+    LayerTypeFolderStartClosed = 2,         // Start of a folder, closed in the UI
+    LayerTypeFolderEnd = 3,                 // End of a folder
+} PSDLayerType;
+
 /*
   Typedef declaractions.
 */
@@ -172,6 +181,8 @@ typedef struct _LayerInfo
 
   StringInfo
     *info;
+
+  int layer_type;
 } LayerInfo;
 
 /*
@@ -1964,6 +1975,89 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
             info=GetStringInfoDatum(layer_info[i].info);
             (void) ReadBlob(image,(const size_t) length,info);
           }
+        /* Parse layer info */
+        layer_info[i].layer_type = LayerTypeStandard;
+        unsigned char* pos = layer_info[i].info->datum;
+        if (pos)
+        {
+            char key[5];
+
+            unsigned char* infoEnd = pos + layer_info[i].info->length;
+            while (pos < infoEnd)
+            {
+                if (LocaleNCompare((const char*)pos, "8BIM", 4) == 0)
+                {
+                    pos += 4;
+
+                    key[0] = (char)(*pos++);
+                    key[1] = (char)(*pos++);
+                    key[2] = (char)(*pos++);
+                    key[3] = (char)(*pos++);
+                    key[4] = '\0';
+                    size  = (unsigned int)(*pos++) << 24;
+                    size |= (unsigned int)(*pos++) << 16;
+                    size |= (unsigned int)(*pos++) << 8;
+                    size |= (unsigned int)(*pos++);
+                    size = size & 0xffffffff;
+
+                    if ((LocaleNCompare(key, "lsct", 4) == 0) || (LocaleNCompare(key, "lsdk", 4) == 0))
+                    {
+                        layer_info[i].layer_type |= (unsigned int)(*pos++) << 24;
+                        layer_info[i].layer_type |= (unsigned int)(*pos++) << 16;
+                        layer_info[i].layer_type |= (unsigned int)(*pos++) << 8;
+                        layer_info[i].layer_type |= (unsigned int)(*pos++);
+
+                        size_t nameCapacity = sizeof(layer_info[i].name) / sizeof(*layer_info[i].name);
+                        
+                        switch (layer_info[i].layer_type)
+                        {
+                            case LayerTypeFolderStartClosed:
+                            case LayerTypeFolderStartOpen:
+                            {
+                                char const* startLayerGroupString = "Layer Group: ";
+                                
+                                size_t sl = 0;
+                                while (*(startLayerGroupString + sl) != 0)
+                                {
+                                    ++sl;
+                                }
+
+                                size_t ll = 0;
+                                while (*(layer_info[i].name + ll) != 0)
+                                {
+                                    ++ll;
+                                }
+
+                                for (size_t ni = ll + 1; ni > 0; )
+                                {
+                                    --ni;
+                                    layer_info[i].name[sl + ni] = layer_info[i].name[ni];
+                                }
+                                for (size_t ni = 0; ni < sl; ++ni)
+                                {
+                                    layer_info[i].name[ni] = startLayerGroupString[ni];
+                                }
+                                break;
+                            }
+                            case LayerTypeFolderEnd:
+                            {
+                                CopyMagickString((char*)layer_info[i].name, "End Layer Group", nameCapacity);
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                    else
+                    {
+                        pos += size;
+                    }
+                }
+                else
+                {
+                    break;
+                }
+            }
+        }
       }
   }
 
@@ -1971,11 +2065,19 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
   {
     if ((layer_info[i].page.width == 0) || (layer_info[i].page.height == 0))
       {
-        if (image->debug != MagickFalse)
-          (void) LogMagickEvent(CoderEvent,GetMagickModule(),
-            "      layer data is empty");
-        if (layer_info[i].info != (StringInfo *) NULL)
-          layer_info[i].info=DestroyStringInfo(layer_info[i].info);
+        if (layer_info[i].layer_type != LayerTypeStandard)
+        {
+            layer_info[i].image = CloneImage(image, 1, 1, MagickFalse, exception);
+            layer_info[i].visible = MagickFalse;
+        }
+        else
+        {
+            if (image->debug != MagickFalse)
+                (void)LogMagickEvent(CoderEvent, GetMagickModule(),
+                    "      layer data is empty");
+            if (layer_info[i].info != (StringInfo*)NULL)
+                layer_info[i].info = DestroyStringInfo(layer_info[i].info);
+        }
         continue;
       }
 
@@ -2450,7 +2552,7 @@ static Image *ReadPSDImage(const ImageInfo *image_info,ExceptionInfo *exception)
       next=image;
       while (next != (Image *) NULL)
       {
-        if (PSDSkipImage(&psd_info,image_info,i++) == MagickFalse)
+        if (next->page.width > 0 && next->page.height > 0 && PSDSkipImage(&psd_info,image_info,i++) == MagickFalse)
           (void) SetImageProfile(next,GetStringInfoName(profile),profile,
             exception);
         next=next->next;
