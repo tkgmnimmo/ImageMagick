@@ -183,6 +183,11 @@ typedef struct _LayerInfo
     *info;
 
   int layer_type;
+
+  MagickBooleanType solid_color_found;
+  MagickRealType solid_color_r;
+  MagickRealType solid_color_g;
+  MagickRealType solid_color_b;
 } LayerInfo;
 
 /*
@@ -1672,6 +1677,58 @@ static void CheckMergedImageAlpha(const PSDInfo *psd_info,Image *image)
     image->alpha_trait=BlendPixelTrait;
 }
 
+static inline double ReadDoubleFromDescriptor(char* key, unsigned int keyLength, unsigned char* pos, unsigned int descriptorLength)
+{
+    double invalidResult = -1.0;
+
+    unsigned char* end = pos + descriptorLength;
+    unsigned char* test = pos;
+    while ((test + keyLength) <= end)
+    {
+        if (LocaleNCompare((char*)test, key, keyLength) == 0)
+        {
+            test += keyLength;
+            while ((test + 4) <= end)
+            {
+                if (LocaleNCompare((char*)test, "doub", 4) == 0)
+                {
+                    test += 4;
+                    if ((test + 8) <= end)
+                    {
+                        union
+                        {
+                            unsigned long long uint64;
+                            double value;
+                        } converter;
+                        
+                        converter.uint64 = 0;
+                        for (int i = 0; i < 8; ++i)
+                        {
+                            converter.uint64 |= (unsigned long long)(*test++) << ( ( 7 - i ) * 8 );
+                        }
+
+                        return converter.value;
+                    }
+                    else
+                    {
+                        return invalidResult;
+                    }
+                }
+                else
+                {
+                    ++test;
+                }
+            }
+        }
+        else
+        {
+            ++test;
+        }
+    }
+
+    return invalidResult;
+}
+
 static MagickBooleanType ReadPSDLayersInternal(Image *image,
   const ImageInfo *image_info,const PSDInfo *psd_info,
   const MagickBooleanType skip_layers,ExceptionInfo *exception)
@@ -1977,6 +2034,7 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
           }
         /* Parse layer info */
         layer_info[i].layer_type = LayerTypeStandard;
+        layer_info[i].solid_color_found = MagickFalse;
         unsigned char* pos = layer_info[i].info->datum;
         if (pos)
         {
@@ -2047,6 +2105,42 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
                         }
                         break;
                     }
+                    else if ((LocaleNCompare(key, "SoCo", 4) == 0))
+                    {
+                        // Solid color image, doesn't have image date so need to set the page up here
+                        unsigned int version = 0;
+                        version  = (unsigned int)(*pos++) << 24;
+                        version |= (unsigned int)(*pos++) << 16;
+                        version |= (unsigned int)(*pos++) << 8;
+                        version |= (unsigned int)(*pos++);
+                        size -= 4;
+
+                        if (version == 16)
+                        {
+                            double r = ReadDoubleFromDescriptor("Rd  ", 4, pos, size);
+                            double g = ReadDoubleFromDescriptor("Grn ", 4, pos, size);
+                            double b = ReadDoubleFromDescriptor("Bl  ", 4, pos, size);
+
+                            if (r >= 0.0f && r >= 0.0f && r >= 0.0f)
+                            {
+                                QuantumInfo quantumInfo;
+                                GetQuantumInfo(image_info, &quantumInfo);
+                               
+                                layer_info[i].solid_color_found = MagickTrue;
+                                layer_info[i].solid_color_r = (MagickRealType)((r / 255.0) * quantumInfo.scale);
+                                layer_info[i].solid_color_g = (MagickRealType)((g / 255.0) * quantumInfo.scale);
+                                layer_info[i].solid_color_b = (MagickRealType)((b / 255.0) * quantumInfo.scale);
+
+                                if (layer_info[i].page.height == 0 && layer_info[i].page.width == 0)
+                                {
+                                    layer_info[i].page.height = psd_info->rows;
+                                    layer_info[i].page.width = psd_info->columns;
+                                }
+                            }
+                        }
+                                                
+                        pos += size;
+                    }
                     else
                     {
                         pos += size;
@@ -2095,6 +2189,13 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
         ThrowBinaryException(ResourceLimitError,"MemoryAllocationFailed",
           image->filename);
       }
+    if (layer_info[i].solid_color_found != MagickFalse)
+      {
+        layer_info[i].image->background_color.red = layer_info->solid_color_r;
+        layer_info[i].image->background_color.green = layer_info->solid_color_g;
+        layer_info[i].image->background_color.blue = layer_info->solid_color_b;
+      }
+
     if (layer_info[i].info != (StringInfo *) NULL)
       {
         (void) SetImageProfile(layer_info[i].image,"psd:additional-info",
