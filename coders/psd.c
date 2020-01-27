@@ -2189,13 +2189,6 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
         ThrowBinaryException(ResourceLimitError,"MemoryAllocationFailed",
           image->filename);
       }
-    if (layer_info[i].solid_color_found != MagickFalse)
-      {
-        layer_info[i].image->background_color.red = layer_info->solid_color_r;
-        layer_info[i].image->background_color.green = layer_info->solid_color_g;
-        layer_info[i].image->background_color.blue = layer_info->solid_color_b;
-      }
-
     if (layer_info[i].info != (StringInfo *) NULL)
       {
         (void) SetImageProfile(layer_info[i].image,"psd:additional-info",
@@ -2227,6 +2220,13 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
         }
         continue;
       }
+
+    if (layer_info[i].solid_color_found != MagickFalse)
+    {
+        layer_info[i].image->background_color.red = layer_info[i].solid_color_r;
+        layer_info[i].image->background_color.green = layer_info[i].solid_color_g;
+        layer_info[i].image->background_color.blue = layer_info[i].solid_color_b;
+    }
 
     if (image->debug != MagickFalse)
       (void) LogMagickEvent(CoderEvent,GetMagickModule(),
