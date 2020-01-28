@@ -185,9 +185,7 @@ typedef struct _LayerInfo
   int layer_type;
 
   MagickBooleanType solid_color_found;
-  MagickRealType solid_color_r;
-  MagickRealType solid_color_g;
-  MagickRealType solid_color_b;
+  PixelInfo solid_color;
 } LayerInfo;
 
 /*
@@ -1465,6 +1463,32 @@ static MagickBooleanType ReadPSDChannel(Image *image,
         layer_info->mask.image=DestroyImage(layer_info->mask.image);
       layer_info->mask.image=mask;
     }
+
+  if (status != MagickFalse && layer_info->solid_color_found != MagickFalse)
+  {
+      if (layer_info->channel_info[channel].type >= -1)
+      {
+          Quantum p;
+          if (layer_info->channel_info[channel].type >= 0)
+          {
+              p = (Quantum) * ((&layer_info->solid_color.red) + layer_info->channel_info[channel].type);
+          }
+          else
+          {
+              p = ScaleCharToQuantum(255);
+          }
+
+          Quantum * q = GetAuthenticPixels(channel_image, 0, 0, channel_image->columns, channel_image->rows, exception);
+          ssize_t pixel_count = channel_image->columns * channel_image->rows;
+          ssize_t packet_size = GetPSDPacketSize(image);
+          for (ssize_t i = 0; i < pixel_count; ++i)
+          {
+              SetPSDPixel(channel_image, psd_info->channels, layer_info->channel_info[channel].type, packet_size, p, q, exception);
+              q += GetPixelChannels(image);
+          }
+          SyncAuthenticPixels(channel_image, exception);
+      }
+  }
   return(status);
 }
 
@@ -2127,9 +2151,9 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
                                 GetQuantumInfo(image_info, &quantumInfo);
                                
                                 layer_info[i].solid_color_found = MagickTrue;
-                                layer_info[i].solid_color_r = (MagickRealType)((r / 255.0) * quantumInfo.scale);
-                                layer_info[i].solid_color_g = (MagickRealType)((g / 255.0) * quantumInfo.scale);
-                                layer_info[i].solid_color_b = (MagickRealType)((b / 255.0) * quantumInfo.scale);
+                                layer_info[i].solid_color.red = (MagickRealType)((r / 255.0) * quantumInfo.scale);
+                                layer_info[i].solid_color.green = (MagickRealType)((g / 255.0) * quantumInfo.scale);
+                                layer_info[i].solid_color.blue = (MagickRealType)((b / 255.0) * quantumInfo.scale);
 
                                 if (layer_info[i].page.height == 0 && layer_info[i].page.width == 0)
                                 {
@@ -2220,13 +2244,6 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
         }
         continue;
       }
-
-    if (layer_info[i].solid_color_found != MagickFalse)
-    {
-        layer_info[i].image->background_color.red = layer_info[i].solid_color_r;
-        layer_info[i].image->background_color.green = layer_info[i].solid_color_g;
-        layer_info[i].image->background_color.blue = layer_info[i].solid_color_b;
-    }
 
     if (image->debug != MagickFalse)
       (void) LogMagickEvent(CoderEvent,GetMagickModule(),
