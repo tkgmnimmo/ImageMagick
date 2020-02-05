@@ -88,7 +88,10 @@
 */
 #define MaxPSDChannels  56
 #define PSDQuantum(x) (((ssize_t) (x)+1) & -2)
-
+
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+
 /*
   Enumerated declaractions.
 */
@@ -2157,8 +2160,10 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
 
                                 if (layer_info[i].page.height == 0 && layer_info[i].page.width == 0)
                                 {
-                                    layer_info[i].page.height = psd_info->rows;
-                                    layer_info[i].page.width = psd_info->columns;
+                                    layer_info[i].page.x = MAX(layer_info[i].mask.page.x, 0);
+                                    layer_info[i].page.y = MAX(layer_info[i].mask.page.y, 0);
+                                    layer_info[i].page.width = MIN(layer_info[i].mask.page.width, psd_info->columns);
+                                    layer_info[i].page.height = MIN(layer_info[i].mask.page.height, psd_info->rows);
                                 }
                             }
                         }
