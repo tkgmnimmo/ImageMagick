@@ -1815,6 +1815,14 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
     j,
     number_layers;
 
+#define PSDKeySize 5
+#define PSDAdditionalLayerInformationLength 1
+
+  const char
+      additionalLayerInformation[PSDAdditionalLayerInformationLength][PSDKeySize] = {
+        "Mt16"
+      };
+
   size=GetPSDSize(psd_info,image);
   if (size == 0)
     {
@@ -1822,29 +1830,55 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
         Skip layers & masks.
       */
       (void) ReadBlobLong(image);
-      count=ReadBlob(image,4,(unsigned char *) type);
-      if (count == 4)
-        ReversePSDString(image,type,(size_t) count);
-      if ((count != 4) || (LocaleNCompare(type,"8BIM",4) != 0))
-        {
-          CheckMergedImageAlpha(psd_info,image);
-          return(MagickTrue);
-        }
-      else
-        {
-          count=ReadBlob(image,4,(unsigned char *) type);
+      MagickBooleanType done = MagickFalse;
+      do
+      {
+          count = ReadBlob(image, 4, (unsigned char*)type);
           if (count == 4)
-            ReversePSDString(image,type,4);
-          if ((count == 4) && ((LocaleNCompare(type,"Lr16",4) == 0) ||
-              (LocaleNCompare(type,"Lr32",4) == 0)))
-            size=GetPSDSize(psd_info,image);
-          else
-            {
-              CheckMergedImageAlpha(psd_info,image);
+              ReversePSDString(image, type, (size_t)count);
+
+          if ((count != 4) || (LocaleNCompare(type, "8BIM", 4) != 0))
+          {
+              CheckMergedImageAlpha(psd_info, image);
               return(MagickTrue);
-            }
-        }
-    }
+          }
+          else
+          {
+              count=ReadBlob(image,4,(unsigned char *) type);
+              if (count == 4)
+                ReversePSDString(image,type,4);
+              if ((count == 4) && ((LocaleNCompare(type, "Lr16", 4) == 0) ||
+                  (LocaleNCompare(type, "Lr32", 4) == 0)))
+              {
+                  size = GetPSDSize(psd_info, image);
+                  done = MagickTrue;
+              }
+              else
+              {
+                  MagickBooleanType found = MagickFalse;
+                  for (i = 0; i < PSDAdditionalLayerInformationLength; i++)
+                  {
+                      if (LocaleNCompare(type, additionalLayerInformation[i], PSDKeySize-1) != 0)
+                          continue;
+
+                      found = MagickTrue;
+                      break;
+                  }
+
+                  if (found == MagickFalse)
+                  {
+                      CheckMergedImageAlpha(psd_info, image);
+                      return(MagickTrue);
+                  }
+                  size = ReadBlobLong(image);
+                  if (size > 0)
+                  {
+                      DiscardBlobBytes(image, size);
+                  }
+              }
+          }
+      } while (done == MagickFalse);
+  }
   if (size == 0)
     return(MagickTrue);
 
