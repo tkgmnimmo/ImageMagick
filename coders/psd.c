@@ -2224,6 +2224,11 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
           layer_info[i].info,exception);
         layer_info[i].info=DestroyStringInfo(layer_info[i].info);
       }
+
+    layer_info[ i ].image->page.x = layer_info[ i ].page.x;
+    layer_info[ i ].image->page.y = layer_info[ i ].page.y;
+    layer_info[ i ].image->page.width = layer_info[ i ].page.width;
+    layer_info[ i ].image->page.height = layer_info[ i ].page.height;
   }
   if (image_info->ping != MagickFalse)
     {
