@@ -124,6 +124,14 @@ typedef enum
     LayerTypeFolderEnd = 3,                 // End of a folder
 } PSDLayerType;
 
+typedef enum
+{
+    MaskParametersNone = 0,
+    MaskParameterUserDensity = 1,
+    MaskParameterUserFeather = 2,
+    MaskParameterVectorMask = 4,
+} MaskParameters;
+
 /*
   Typedef declaractions.
 */
@@ -146,7 +154,11 @@ typedef struct _MaskInfo
 
   unsigned char
     background,
-    flags;
+    flags,
+    parameters;
+
+  unsigned char maskDensity;
+  MagickDoubleType maskFeather;
 } MaskInfo;
 
 typedef struct _LayerInfo
@@ -1414,43 +1426,50 @@ static MagickBooleanType ReadPSDChannel(Image *image,
     }
 
   offset=TellBlob(image);
-  status=MagickFalse;
-  switch(compression)
+  if (layer_info->solid_color_found == MagickFalse || layer_info->channel_info[channel].type <= -1)
   {
-    case Raw:
-      status=ReadPSDChannelRaw(channel_image,psd_info->channels,
-        (ssize_t) layer_info->channel_info[channel].type,exception);
-      break;
-    case RLE:
+      status = MagickFalse;
+      switch (compression)
       {
-        MagickOffsetType
-          *sizes;
+      case Raw:
+          status = ReadPSDChannelRaw(channel_image, psd_info->channels,
+              (ssize_t)layer_info->channel_info[channel].type, exception);
+          break;
+      case RLE:
+      {
+          MagickOffsetType
+              * sizes;
 
-        sizes=ReadPSDRLESizes(channel_image,psd_info,channel_image->rows);
-        if (sizes == (MagickOffsetType *) NULL)
-          ThrowBinaryException(ResourceLimitError,"MemoryAllocationFailed",
-            image->filename);
-        status=ReadPSDChannelRLE(channel_image,psd_info,
-          (ssize_t) layer_info->channel_info[channel].type,sizes,exception);
-        sizes=(MagickOffsetType *) RelinquishMagickMemory(sizes);
+          sizes = ReadPSDRLESizes(channel_image, psd_info, channel_image->rows);
+          if (sizes == (MagickOffsetType*)NULL)
+              ThrowBinaryException(ResourceLimitError, "MemoryAllocationFailed",
+                  image->filename);
+          status = ReadPSDChannelRLE(channel_image, psd_info,
+              (ssize_t)layer_info->channel_info[channel].type, sizes, exception);
+          sizes = (MagickOffsetType*)RelinquishMagickMemory(sizes);
       }
       break;
-    case ZipWithPrediction:
-    case ZipWithoutPrediction:
+      case ZipWithPrediction:
+      case ZipWithoutPrediction:
 #ifdef MAGICKCORE_ZLIB_DELEGATE
-      status=ReadPSDChannelZip(channel_image,layer_info->channels,
-        (ssize_t) layer_info->channel_info[channel].type,compression,
-        layer_info->channel_info[channel].size-2,exception);
+          status = ReadPSDChannelZip(channel_image, layer_info->channels,
+              (ssize_t)layer_info->channel_info[channel].type, compression,
+              layer_info->channel_info[channel].size - 2, exception);
 #else
-      (void) ThrowMagickException(exception,GetMagickModule(),
-          MissingDelegateWarning,"DelegateLibrarySupportNotBuiltIn",
-            "'%s' (ZLIB)",image->filename);
+          (void)ThrowMagickException(exception, GetMagickModule(),
+              MissingDelegateWarning, "DelegateLibrarySupportNotBuiltIn",
+              "'%s' (ZLIB)", image->filename);
 #endif
-      break;
-    default:
-      (void) ThrowMagickException(exception,GetMagickModule(),TypeWarning,
-        "CompressionNotSupported","'%.20g'",(double) compression);
-      break;
+          break;
+      default:
+          (void)ThrowMagickException(exception, GetMagickModule(), TypeWarning,
+              "CompressionNotSupported", "'%.20g'", (double)compression);
+          break;
+      }
+  }
+  else
+  {
+      status = MagickTrue;
   }
 
   (void) SeekBlob(image,offset+layer_info->channel_info[channel].size-2,
@@ -1535,6 +1554,21 @@ static MagickBooleanType ReadPSDLayer(Image *image,const ImageInfo *image_info,
   (void) SetImageArtifact(layer_info->image,"psd:layer.opacity",message);
   (void) SetImageProperty(layer_info->image,"label",(char *) layer_info->name,
     exception);
+
+  if (layer_info->mask.parameters & MaskParameterUserDensity)
+  {
+      (void)FormatLocaleString(message, MagickPathExtent, "%u", layer_info->mask.maskDensity);
+      (void)SetImageArtifact(layer_info->image, "psd:layer.mask.density", message);
+  }
+  if (layer_info->mask.parameters & MaskParameterUserFeather)
+  {
+      (void)FormatLocaleString(message, MagickPathExtent, "%.20g", layer_info->mask.maskFeather);
+      (void)SetImageArtifact(layer_info->image, "psd:layer.mask.feather", message);
+  }
+  if (layer_info->mask.parameters & MaskParameterVectorMask)
+  {
+      (void)SetImageArtifact(layer_info->image, "psd:layer.mask.vector_mask", "1");
+  }
 
   status=MagickTrue;
   for (j=0; j < (ssize_t) layer_info->channels; j++)
@@ -1783,6 +1817,14 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
     j,
     number_layers;
 
+#define PSDKeySize 5
+#define PSDAdditionalLayerInformationLength 1
+
+  const char
+      additionalLayerInformation[PSDAdditionalLayerInformationLength][PSDKeySize] = {
+        "Mt16"
+      };
+
   size=GetPSDSize(psd_info,image);
   if (size == 0)
     {
@@ -1790,29 +1832,55 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
         Skip layers & masks.
       */
       (void) ReadBlobLong(image);
-      count=ReadBlob(image,4,(unsigned char *) type);
-      if (count == 4)
-        ReversePSDString(image,type,(size_t) count);
-      if ((count != 4) || (LocaleNCompare(type,"8BIM",4) != 0))
-        {
-          CheckMergedImageAlpha(psd_info,image);
-          return(MagickTrue);
-        }
-      else
-        {
-          count=ReadBlob(image,4,(unsigned char *) type);
+      MagickBooleanType done = MagickFalse;
+      do
+      {
+          count = ReadBlob(image, 4, (unsigned char*)type);
           if (count == 4)
-            ReversePSDString(image,type,4);
-          if ((count == 4) && ((LocaleNCompare(type,"Lr16",4) == 0) ||
-              (LocaleNCompare(type,"Lr32",4) == 0)))
-            size=GetPSDSize(psd_info,image);
-          else
-            {
-              CheckMergedImageAlpha(psd_info,image);
+              ReversePSDString(image, type, (size_t)count);
+
+          if ((count != 4) || (LocaleNCompare(type, "8BIM", 4) != 0))
+          {
+              CheckMergedImageAlpha(psd_info, image);
               return(MagickTrue);
-            }
-        }
-    }
+          }
+          else
+          {
+              count=ReadBlob(image,4,(unsigned char *) type);
+              if (count == 4)
+                ReversePSDString(image,type,4);
+              if ((count == 4) && ((LocaleNCompare(type, "Lr16", 4) == 0) ||
+                  (LocaleNCompare(type, "Lr32", 4) == 0)))
+              {
+                  size = GetPSDSize(psd_info, image);
+                  done = MagickTrue;
+              }
+              else
+              {
+                  MagickBooleanType found = MagickFalse;
+                  for (i = 0; i < PSDAdditionalLayerInformationLength; i++)
+                  {
+                      if (LocaleNCompare(type, additionalLayerInformation[i], PSDKeySize-1) != 0)
+                          continue;
+
+                      found = MagickTrue;
+                      break;
+                  }
+
+                  if (found == MagickFalse)
+                  {
+                      CheckMergedImageAlpha(psd_info, image);
+                      return(MagickTrue);
+                  }
+                  size = ReadBlobLong(image);
+                  if (size > 0)
+                  {
+                      DiscardBlobBytes(image, size);
+                  }
+              }
+          }
+      } while (done == MagickFalse);
+  }
   if (size == 0)
     return(MagickTrue);
 
@@ -1986,6 +2054,36 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
                 layer_info[i].mask.page.x=layer_info[i].mask.page.x-
                   layer_info[i].page.x;
               }
+            int bytesRead = 18;
+            layer_info[i].mask.parameters = MaskParametersNone;
+            if (layer_info[i].mask.flags & 0x10)
+            {
+                unsigned char params = (unsigned char)ReadBlobByte(image);
+                ++bytesRead;
+
+                if (params & 0x01)
+                {
+                    layer_info[i].mask.maskDensity = (unsigned char)ReadBlobByte(image);
+                    layer_info[i].mask.parameters |= MaskParameterUserDensity;
+                    ++bytesRead;
+                }
+
+                if (params & 0x02)
+                {
+                    layer_info[i].mask.maskFeather = ReadBlobDouble(image);
+                    layer_info[i].mask.parameters |= MaskParameterUserFeather;
+                    bytesRead += sizeof(MagickDoubleType);
+                }
+
+                if (params & 0x0c)
+                {
+                    layer_info[i].mask.parameters |= MaskParameterVectorMask;
+                }
+                else
+                {
+                    layer_info[i].mask.flags &= ~0x10;       // Remove the flag so it exports but without user mask options (they will be reported to the user though)
+                }               
+            }
             if (image->debug != MagickFalse)
               (void) LogMagickEvent(CoderEvent,GetMagickModule(),
                 "      layer mask: offset(%.20g,%.20g), size(%.20g,%.20g), length=%.20g",
@@ -1997,7 +2095,7 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
             /*
               Skip over the rest of the layer mask information.
             */
-            if (DiscardBlobBytes(image,(MagickSizeType) (length-18)) == MagickFalse)
+            if (DiscardBlobBytes(image,(MagickSizeType) (length-bytesRead)) == MagickFalse)
               {
                 layer_info=DestroyLayerInfo(layer_info,number_layers);
                 ThrowBinaryException(CorruptImageError,
