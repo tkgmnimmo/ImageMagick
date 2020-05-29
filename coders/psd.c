@@ -492,6 +492,7 @@ static MagickBooleanType ApplyPSDOpacityMask(Image *image,const Image *mask,
   color.red=(MagickRealType) background;
   color.green=(MagickRealType)background;
   color.blue=(MagickRealType)background;
+  color.alpha = (MagickRealType)background;
   (void) SetImageColor(complete_mask,&color,exception);
   status=CompositeImage(complete_mask,mask,OverCompositeOp,MagickTrue,
     mask->page.x/*-image->page.x*/,mask->page.y/*-image->page.y*/,exception);   // The mask offset is already relative to the base image 
@@ -2363,6 +2364,15 @@ static MagickBooleanType ReadPSDLayersInternal(Image *image,
       (MagickSizeType) number_layers);
     if (status == MagickFalse)
       break;
+  }
+
+  for (i = 0; i < number_layers; i++)
+  {
+      if (layer_info[i].layer_type != LayerTypeStandard)
+      {
+          layer_info[i].image->columns = layer_info[i].page.width;
+          layer_info[i].image->rows = layer_info[i].page.height;
+      }
   }
 
   if (status != MagickFalse)
